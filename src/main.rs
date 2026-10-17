@@ -1,3 +1,7 @@
+use hyper_util::{
+    rt::{TokioExecutor, TokioIo},
+    server::conn::auto::Builder,
+};
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 use warp::{Filter, http::StatusCode};
@@ -6,9 +10,10 @@ type Store = Arc<Mutex<BTreeMap<String, String>>>;
 
 #[tokio::main]
 async fn main() {
+    let metrics = metrics::Metrics::new().expect("failed to initialize metrics");
     let store: Store = Arc::new(Mutex::new(BTreeMap::new()));
     let with_store = warp::any().map(move || store.clone());
-    let key = warp::path!("kv" / String);
+    let key = warp::path!("kv" / String).and(metrics.label("/kv/{key}"));
 
     let get = key
         .and(warp::get())
@@ -47,8 +52,27 @@ async fn main() {
             }
         });
 
+    let routes = get.or(put).or(delete).or(metrics.route());
+    let service = metrics.instrument(warp::service(routes));
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:3030")
+        .await
+        .expect("failed to bind HTTP listener");
     println!("Listening on http://127.0.0.1:3030");
-    warp::serve(get.or(put).or(delete))
-        .run(([127, 0, 0, 1], 3030))
-        .await;
+    loop {
+        let (stream, _) = listener
+            .accept()
+            .await
+            .expect("failed to accept connection");
+        let service = service.clone();
+        tokio::spawn(async move {
+            if let Err(error) = Builder::new(TokioExecutor::new())
+                .serve_connection_with_upgrades(TokioIo::new(stream), service)
+                .await
+            {
+                eprintln!("HTTP connection failed: {error}");
+            }
+        });
+    }
 }
+mod metrics;
