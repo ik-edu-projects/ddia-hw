@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""Build a Grafana dashboard from the endpoint registry of a running server."""
+"""Generate and optionally publish a Grafana dashboard from a running server's endpoints."""
 
 import argparse
 import json
+import os
 import time
 from pathlib import Path
 from urllib.error import HTTPError, URLError
@@ -56,6 +57,32 @@ def wait_for_endpoints(server_url, wait_seconds):
             time.sleep(min(1, remaining))
 
 
+def grafana_request(grafana_url, path, authorization, method="GET", data=None):
+    headers = {"Accept": "application/json", "Authorization": authorization}
+    if data is not None:
+        headers["Content-Type"] = "application/json"
+    request = Request(
+        grafana_url.rstrip("/") + path,
+        data=json.dumps(data).encode("utf-8") if data is not None else None,
+        headers=headers,
+        method=method,
+    )
+    with urlopen(request, timeout=10) as response:
+        return json.load(response)
+
+
+def publish_dashboard(grafana_url, token, dashboard):
+    if not token.strip():
+        raise ValueError("Grafana service account token is empty")
+    return grafana_request(
+        grafana_url,
+        "/api/dashboards/db",
+        f"Bearer {token.strip()}",
+        method="POST",
+        data={"dashboard": dashboard, "overwrite": True},
+    )
+
+
 def panel(panel_id, title, x, y, unit, fill_opacity, targets, datasource):
     return {
         "id": panel_id,
@@ -101,11 +128,11 @@ def endpoint_panels(index, endpoint, datasource, service_selector):
         {
             "refId": "B",
             "expr": (
-                f"sum(rate(http_requests_total{{{selector},"
+                f"sum by (code) (rate(http_requests_total{{{selector},"
                 'code=~"4..|5.."}[$__rate_interval]))'
             ),
             "datasource": datasource,
-            "legendFormat": "errors/s",
+            "legendFormat": "HTTP {{code}} errors/s",
         },
     ]
     bucket_rates = (
@@ -198,7 +225,16 @@ def main():
         "--server-url", default="http://127.0.0.1:3030", help="running backend URL"
     )
     parser.add_argument(
-        "--output", type=Path, default=DEFAULT_OUTPUT, help="dashboard JSON path"
+        "--output", type=Path, help="also write dashboard JSON (default when not publishing)"
+    )
+    parser.add_argument(
+        "--grafana-url", help="publish to this Grafana instance using its HTTP API"
+    )
+    parser.add_argument(
+        "--grafana-token-file",
+        type=Path,
+        default=os.environ.get("GRAFANA_SERVICE_ACCOUNT_TOKEN_FILE"),
+        help="service account token file; alternatively set GRAFANA_SERVICE_ACCOUNT_TOKEN",
     )
     parser.add_argument(
         "--datasource-uid", default="victoriametrics", help="Grafana data source UID"
@@ -216,14 +252,26 @@ def main():
     try:
         endpoints = wait_for_endpoints(args.server_url, args.wait_seconds)
         dashboard = build_dashboard(endpoints, args.datasource_uid, args.service)
-        args.output.parent.mkdir(parents=True, exist_ok=True)
-        temporary = args.output.with_name(args.output.name + ".tmp")
-        temporary.write_text(json.dumps(dashboard, indent=2) + "\n", encoding="utf-8")
-        temporary.replace(args.output)
+        if args.grafana_url:
+            token = (
+                args.grafana_token_file.read_text(encoding="utf-8")
+                if args.grafana_token_file
+                else os.environ.get("GRAFANA_SERVICE_ACCOUNT_TOKEN", "")
+            )
+            result = publish_dashboard(args.grafana_url, token, dashboard)
+            print(
+                f"Published {len(dashboard['panels'])} panels at "
+                f"{args.grafana_url.rstrip('/')}{result['url']}"
+            )
+        output = args.output or (DEFAULT_OUTPUT if not args.grafana_url else None)
+        if output:
+            output.parent.mkdir(parents=True, exist_ok=True)
+            temporary = output.with_name(output.name + ".tmp")
+            temporary.write_text(json.dumps(dashboard, indent=2) + "\n", encoding="utf-8")
+            temporary.replace(output)
+            print(f"Wrote {len(dashboard['panels'])} panels to {output}")
     except (HTTPError, URLError, OSError, ValueError) as error:
         parser.exit(1, f"error: {error}\n")
-
-    print(f"Wrote {len(dashboard['panels'])} panels to {args.output}")
 
 
 if __name__ == "__main__":
