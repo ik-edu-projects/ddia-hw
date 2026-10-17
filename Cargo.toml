@@ -8,6 +8,8 @@ bytes = "1"
 hyper = { version = "1", features = ["server", "http1", "http2"] }
 hyper-util = { version = "0.1", features = ["server-auto", "tokio"] }
 prometheus = "0.14"
-tokio = { version = "1", features = ["macros", "rt-multi-thread", "net"] }
+rand = "0.10"
+rand_distr = "0.6"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "time"] }
 tower-service = "0.3"
 warp = { version = "0.4", features = ["server"] }

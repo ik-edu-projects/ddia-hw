@@ -10,6 +10,11 @@ services:
       CONTOUR: docker
     ports:
       - "127.0.0.1:3030:3030"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:3030/endpoints"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
     restart: unless-stopped
 
   victoriametrics:
@@ -22,8 +27,14 @@ services:
       - victoria-metrics-data:/victoria-metrics-data
     ports:
       - "127.0.0.1:8428:8428"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8428/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
     depends_on:
-      - backend
+      backend:
+        condition: service_healthy
     restart: unless-stopped
 
   dashboard-generator:
@@ -41,7 +52,8 @@ services:
       - ./scripts/generate_dashboard.py:/app/generate_dashboard.py:ro
       - grafana-dashboards:/dashboards
     depends_on:
-      - backend
+      backend:
+        condition: service_healthy
     restart: "no"
 
   grafana:
@@ -59,11 +71,32 @@ services:
       - grafana-data:/var/lib/grafana
     ports:
       - "127.0.0.1:3000:3000"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:3000/api/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
     depends_on:
       victoriametrics:
-        condition: service_started
+        condition: service_healthy
       dashboard-generator:
         condition: service_completed_successfully
+    restart: unless-stopped
+
+  load-generator:
+    build:
+      context: ./load
+    environment:
+      BASE_URL: http://backend:3030
+    depends_on:
+      backend:
+        condition: service_healthy
+      victoriametrics:
+        condition: service_healthy
+      dashboard-generator:
+        condition: service_completed_successfully
+      grafana:
+        condition: service_healthy
     restart: unless-stopped
 
 volumes:
