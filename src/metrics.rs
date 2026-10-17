@@ -1,5 +1,5 @@
 use std::{
-    collections::HashMap,
+    collections::{BTreeSet, HashMap},
     convert::Infallible,
     env,
     sync::{Arc, Mutex},
@@ -27,6 +27,7 @@ pub struct Metrics {
     registry: Registry,
     requests: IntCounterVec,
     duration: HistogramVec,
+    endpoints: Arc<Mutex<BTreeSet<&'static str>>>,
 }
 
 impl Metrics {
@@ -71,6 +72,7 @@ impl Metrics {
             registry,
             requests,
             duration,
+            endpoints: Arc::new(Mutex::new(BTreeSet::new())),
         })
     }
 
@@ -78,7 +80,18 @@ impl Metrics {
         &self,
         path: &'static str,
     ) -> impl Filter<Extract = (), Error = warp::Rejection> + Copy + use<> {
+        self.endpoints.lock().unwrap().insert(path);
         mark(Some(path))
+    }
+
+    pub fn endpoints_route(
+        &self,
+    ) -> impl Filter<Extract = (warp::reply::Json,), Error = warp::Rejection> + Clone + use<> {
+        let endpoints = self.endpoints.clone();
+        warp::path!("endpoints")
+            .and(self.label("/endpoints"))
+            .and(warp::get())
+            .map(move || warp::reply::json(&*endpoints.lock().unwrap()))
     }
 
     pub fn instrument<S, B>(

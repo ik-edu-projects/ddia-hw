@@ -2,8 +2,8 @@ use hyper_util::{
     rt::{TokioExecutor, TokioIo},
     server::conn::auto::Builder,
 };
-use std::env;
 use std::collections::BTreeMap;
+use std::env;
 use std::sync::{Arc, Mutex};
 use warp::{Filter, http::StatusCode};
 
@@ -53,7 +53,11 @@ async fn main() {
             }
         });
 
-    let routes = get.or(put).or(delete).or(metrics.route());
+    let routes = get
+        .or(put)
+        .or(delete)
+        .or(metrics.endpoints_route())
+        .or(metrics.route());
     let service = metrics.instrument(warp::service(routes));
 
     let bind_addr = env::var("BIND_ADDR").unwrap_or_else(|_| "127.0.0.1:3030".into());

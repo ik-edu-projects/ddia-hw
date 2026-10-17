@@ -1,0 +1,11 @@
+apiVersion: 1
+
+providers:
+  - name: endpoint-registry
+    orgId: 1
+    type: file
+    disableDeletion: false
+    allowUiUpdates: false
+    updateIntervalSeconds: 10
+    options:
+      path: /etc/grafana/dashboards
