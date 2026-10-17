@@ -10,8 +10,15 @@ use hyper::service::Service;
 use prometheus::{
     Encoder, HistogramOpts, HistogramVec, IntCounterVec, Opts, Registry, TextEncoder,
 };
+use serde::Serialize;
 use tower_service::Service as TowerService;
 use warp::{Filter, Reply, http::StatusCode};
+
+#[derive(Clone, Copy, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+struct Endpoint {
+    path: &'static str,
+    method: &'static str,
+}
 
 #[derive(Clone)]
 struct RequestLabel(Arc<Mutex<Option<&'static str>>>);
@@ -27,7 +34,7 @@ pub struct Metrics {
     registry: Registry,
     requests: IntCounterVec,
     duration: HistogramVec,
-    endpoints: Arc<Mutex<BTreeSet<&'static str>>>,
+    endpoints: Arc<Mutex<BTreeSet<Endpoint>>>,
 }
 
 impl Metrics {
@@ -76,11 +83,15 @@ impl Metrics {
         })
     }
 
-    pub fn label(
+    pub fn endpoint(
         &self,
+        method: &'static str,
         path: &'static str,
     ) -> impl Filter<Extract = (), Error = warp::Rejection> + Copy + use<> {
-        self.endpoints.lock().unwrap().insert(path);
+        self.endpoints
+            .lock()
+            .unwrap()
+            .insert(Endpoint { path, method });
         mark(Some(path))
     }
 
@@ -89,7 +100,7 @@ impl Metrics {
     ) -> impl Filter<Extract = (warp::reply::Json,), Error = warp::Rejection> + Clone + use<> {
         let endpoints = self.endpoints.clone();
         warp::path!("endpoints")
-            .and(self.label("/endpoints"))
+            .and(self.endpoint("GET", "/endpoints"))
             .and(warp::get())
             .map(move || warp::reply::json(&*endpoints.lock().unwrap()))
     }

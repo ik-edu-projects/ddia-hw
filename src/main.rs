@@ -14,6 +14,7 @@ type Store = Arc<Mutex<BTreeMap<String, String>>>;
 const TOO_MANY_REQUESTS_PROBABILITY: f64 = 0.01;
 const MEAN_DELAY_MS: f64 = 20.0;
 const DELAY_STD_DEV_MS: f64 = 5.0;
+const KV_PATH: &str = "/kv/{key}";
 
 #[derive(Debug)]
 struct TooManyRequests;
@@ -44,10 +45,11 @@ async fn main() {
     let metrics = metrics::Metrics::new().expect("failed to initialize metrics");
     let store: Store = Arc::new(Mutex::new(BTreeMap::new()));
     let with_store = warp::any().map(move || store.clone());
-    let key = warp::path!("kv" / String).and(metrics.label("/kv/{key}"));
+    let key = warp::path!("kv" / String);
     let simulated_request = simulated_request();
 
     let get = key
+        .and(metrics.endpoint("GET", KV_PATH))
         .and(warp::get())
         .and(simulated_request.clone())
         .and(with_store.clone())
@@ -60,6 +62,7 @@ async fn main() {
         });
 
     let put = key
+        .and(metrics.endpoint("PUT", KV_PATH))
         .and(warp::put())
         .and(with_store.clone())
         .and(warp::body::content_length_limit(1024 * 1024))
@@ -76,6 +79,7 @@ async fn main() {
         });
 
     let delete = key
+        .and(metrics.endpoint("DELETE", KV_PATH))
         .and(warp::delete())
         .and(simulated_request)
         .and(with_store)

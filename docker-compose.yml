@@ -11,7 +11,7 @@ services:
     ports:
       - "127.0.0.1:3030:3030"
     healthcheck:
-      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:3030/endpoints"]
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:3030/metrics"]
       interval: 5s
       timeout: 3s
       retries: 12

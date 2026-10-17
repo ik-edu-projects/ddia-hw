@@ -28,13 +28,20 @@ def fetch_endpoints(server_url):
     if not isinstance(endpoints, list):
         raise ValueError("endpoint registry must be a JSON array")
     seen = set()
-    for path in endpoints:
+    for endpoint in endpoints:
+        if not isinstance(endpoint, dict):
+            raise ValueError("each endpoint must contain method and path")
+        method = endpoint.get("method")
+        path = endpoint.get("path")
+        if not isinstance(method, str) or not method:
+            raise ValueError("each endpoint must have an HTTP method")
         if not isinstance(path, str) or not path.startswith("/"):
-            raise ValueError("each endpoint must be an absolute path template")
-        if path in seen:
-            raise ValueError(f"duplicate endpoint path: {path}")
-        seen.add(path)
-    return endpoints
+            raise ValueError("each endpoint must have an absolute path template")
+        identity = (method, path)
+        if identity in seen:
+            raise ValueError(f"duplicate endpoint: {method} {path}")
+        seen.add(identity)
+    return sorted(endpoints, key=lambda endpoint: (endpoint["path"], endpoint["method"]))
 
 
 def wait_for_endpoints(server_url, wait_seconds):
@@ -49,27 +56,86 @@ def wait_for_endpoints(server_url, wait_seconds):
             time.sleep(min(1, remaining))
 
 
-def panel(panel_id, title, expression, unit, x, y, datasource):
+def panel(panel_id, title, x, y, unit, fill_opacity, targets, datasource):
     return {
         "id": panel_id,
         "title": title,
         "type": "timeseries",
         "datasource": datasource,
-        "gridPos": {"h": 8, "w": 8, "x": x, "y": y},
-        "fieldConfig": {"defaults": {"unit": unit}, "overrides": []},
+        "gridPos": {"h": 9, "w": 12, "x": x, "y": y},
+        "fieldConfig": {
+            "defaults": {
+                "unit": unit,
+                "min": 0,
+                "custom": {
+                    "drawStyle": "line",
+                    "lineWidth": 2,
+                    "fillOpacity": fill_opacity,
+                },
+            },
+            "overrides": [],
+        },
         "options": {
             "legend": {"displayMode": "list", "placement": "bottom", "showLegend": True},
             "tooltip": {"mode": "multi"},
         },
-        "targets": [
-            {
-                "refId": "A",
-                "expr": expression,
-                "datasource": datasource,
-                "legendFormat": "{{method}}",
-            }
-        ],
+        "targets": targets,
     }
+
+
+def endpoint_panels(index, endpoint, datasource, service_selector):
+    method = endpoint["method"]
+    path = endpoint["path"]
+    title = f"{method} {path}"
+    selector = (
+        f"{service_selector},path={json.dumps(path)},method={json.dumps(method)},"
+        'dc=~"${dc:regex}",pod=~"${pod:regex}"'
+    )
+    requests = [
+        {
+            "refId": "A",
+            "expr": f"sum(rate(http_requests_total{{{selector}}}[$__rate_interval]))",
+            "datasource": datasource,
+            "legendFormat": "requests/s",
+        },
+        {
+            "refId": "B",
+            "expr": (
+                f"sum(rate(http_requests_total{{{selector},"
+                'code=~"4..|5.."}[$__rate_interval]))'
+            ),
+            "datasource": datasource,
+            "legendFormat": "errors/s",
+        },
+    ]
+    bucket_rates = (
+        "sum by (le) "
+        f"(rate(http_request_duration_seconds_bucket{{{selector}}}"
+        "[$__rate_interval]))"
+    )
+    latency = [
+        {
+            "refId": chr(ord("A") + target_index),
+            "expr": f"histogram_quantile({quantile}, {bucket_rates})",
+            "datasource": datasource,
+            "legendFormat": f"p{int(quantile * 100)}",
+        }
+        for target_index, quantile in enumerate((0.50, 0.75, 0.90, 0.95, 0.99))
+    ]
+    y = index * 9
+    return [
+        panel(
+            2 * index + 1,
+            f"{title} - requests & errors",
+            0,
+            y,
+            "reqps",
+            25,
+            requests,
+            datasource,
+        ),
+        panel(2 * index + 2, f"{title} - latency", 12, y, "s", 0, latency, datasource),
+    ]
 
 
 def variable(name, label, query, datasource):
@@ -98,63 +164,13 @@ def build_dashboard(endpoints, datasource_uid, service):
         f"label_values(http_requests_total{{{service_selector},"
         'dc=~"${dc:regex}"}, pod)'
     )
-    registry_lines = ["| Path |", "| --- |"]
-    for path in endpoints:
-        registry_lines.append(f"| `{path}` |")
-    panels = [
-        {
-            "id": 1,
-            "title": "Endpoint paths",
-            "type": "text",
-            "gridPos": {"h": 6, "w": 24, "x": 0, "y": 0},
-            "options": {"mode": "markdown", "content": "\n".join(registry_lines)},
-        }
-    ]
-    row = 0
-    for path in endpoints:
-        selector = (
-            f"{service_selector},path={json.dumps(path)},"
-            'dc=~"${dc:regex}",pod=~"${pod:regex}"'
-        )
-        base = path
-        y = 6 + row * 8
-        panel_id = len(panels) + 1
-        panels.extend(
-            [
-                panel(
-                    panel_id,
-                    f"{base} - requests/s",
-                    f"sum by (method) (rate(http_requests_total{{{selector}}}[$__rate_interval]))",
-                    "reqps",
-                    0,
-                    y,
-                    datasource,
-                ),
-                panel(
-                    panel_id + 1,
-                    f"{base} - errors/s",
-                    f"sum by (method) (rate(http_requests_total{{{selector},code=~\"4..|5..\"}}[$__rate_interval]))",
-                    "reqps",
-                    8,
-                    y,
-                    datasource,
-                ),
-                panel(
-                    panel_id + 2,
-                    f"{base} - p95 latency",
-                    "histogram_quantile(0.95, sum by (le, method) "
-                    f"(rate(http_request_duration_seconds_bucket{{{selector}}}[$__rate_interval])))",
-                    "s",
-                    16,
-                    y,
-                    datasource,
-                ),
-            ]
-        )
-        row += 1
-
-    if not row:
+    if not endpoints:
         raise ValueError("endpoint registry is empty")
+    panels = [
+        current_panel
+        for index, endpoint in enumerate(endpoints)
+        for current_panel in endpoint_panels(index, endpoint, datasource, service_selector)
+    ]
 
     return {
         "uid": "ddia-1-endpoints",
