@@ -2,6 +2,7 @@ use hyper_util::{
     rt::{TokioExecutor, TokioIo},
     server::conn::auto::Builder,
 };
+use std::env;
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 use warp::{Filter, http::StatusCode};
@@ -55,10 +56,11 @@ async fn main() {
     let routes = get.or(put).or(delete).or(metrics.route());
     let service = metrics.instrument(warp::service(routes));
 
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:3030")
+    let bind_addr = env::var("BIND_ADDR").unwrap_or_else(|_| "127.0.0.1:3030".into());
+    let listener = tokio::net::TcpListener::bind(&bind_addr)
         .await
         .expect("failed to bind HTTP listener");
-    println!("Listening on http://127.0.0.1:3030");
+    println!("Listening on http://{bind_addr}");
     loop {
         let (stream, _) = listener
             .accept()
