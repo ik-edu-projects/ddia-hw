@@ -1,0 +1,108 @@
+services:
+  backend:
+    build:
+      context: .
+    environment:
+      BIND_ADDR: 0.0.0.0:3030
+      DC: docker
+      POD: backend
+      SERVICE: ddia-1
+      CONTOUR: docker
+    ports:
+      - "127.0.0.1:3030:3030"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:3030/metrics"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+    restart: unless-stopped
+
+  victoriametrics:
+    image: victoriametrics/victoria-metrics:latest
+    command:
+      - "-promscrape.config=/etc/victoria-metrics/promscrape.yml"
+      - "-storageDataPath=/victoria-metrics-data"
+    volumes:
+      - ./victoria-metrics/promscrape.yml:/etc/victoria-metrics/promscrape.yml:ro
+      - victoria-metrics-data:/victoria-metrics-data
+    ports:
+      - "127.0.0.1:8428:8428"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8428/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+    depends_on:
+      backend:
+        condition: service_healthy
+    restart: unless-stopped
+
+  grafana-secrets:
+    image: python:3.12-alpine
+    command: ["python", "/app/bootstrap_grafana.py", "--init-secrets"]
+    volumes:
+      - ./scripts:/app:ro
+      - grafana-secrets:/run/secrets/grafana
+    restart: "no"
+
+  grafana:
+    image: grafana/grafana:11.6.0
+    entrypoint: ["/bin/sh", "/app/start_grafana.sh"]
+    environment:
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+      GF_AUTH_DISABLE_LOGIN_FORM: "true"
+      GF_AUTH_BASIC_ENABLED: "true"
+      GF_SECURITY_ADMIN_PASSWORD__FILE: /run/secrets/grafana/admin-password
+    volumes:
+      - ./grafana/provisioning/datasources:/etc/grafana/provisioning/datasources:ro
+      - ./scripts/start_grafana.sh:/app/start_grafana.sh:ro
+      - grafana-secrets:/run/secrets/grafana:ro
+      - grafana-data:/var/lib/grafana
+    ports:
+      - "127.0.0.1:3000:3000"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:3000/api/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+    depends_on:
+      victoriametrics:
+        condition: service_healthy
+      grafana-secrets:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+  dashboard-generator:
+    image: python:3.12-alpine
+    command: ["python", "/app/bootstrap_grafana.py"]
+    volumes:
+      - ./scripts:/app:ro
+      - grafana-secrets:/run/secrets/grafana
+    depends_on:
+      backend:
+        condition: service_healthy
+      grafana:
+        condition: service_healthy
+    restart: "no"
+
+  load-generator:
+    build:
+      context: ./load
+    environment:
+      BASE_URL: http://backend:3030
+    depends_on:
+      backend:
+        condition: service_healthy
+      victoriametrics:
+        condition: service_healthy
+      dashboard-generator:
+        condition: service_completed_successfully
+      grafana:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  victoria-metrics-data:
+  grafana-data:
+  grafana-secrets:
